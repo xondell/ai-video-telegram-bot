@@ -48,3 +48,12 @@ def storyboard_kb(job_id: int):
         [("✏️ Подправить", f"sb:{job_id}:edit"), ("🔄 Регенерировать", f"sb:{job_id}:regen")],
         [("❌ Отмена", f"sb:{job_id}:cancel")],
     ])
+
+
+
+def scenario_source_kb(job_id: int):
+    return kb([
+        [("🧠 Сгенерировать ИИ", f"src:{job_id}:ai")],
+        [("✍️ Свой текст", f"src:{job_id}:own")],
+        [("❌ Отмена", f"src:{job_id}:cancel")],
+    ])

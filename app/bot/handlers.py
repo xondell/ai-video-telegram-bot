@@ -23,7 +23,7 @@ from app.providers.fal.pricing import FalPricingService, PricingUnavailable
 from app.services.storage import storage
 from app.utils.audio import InvalidAudio, probe_audio
 from app.video.planner import GenerationPlan, GenerationPlanner
-from .keyboards import confirm_kb, model_kb, ratio_kb, storyboard_kb, style_kb
+from .keyboards import confirm_kb, model_kb, ratio_kb, scenario_source_kb, storyboard_kb, style_kb
 
 logger = logging.getLogger(__name__)
 
@@ -260,44 +260,98 @@ async def choose_model(callback: CallbackQuery):
     if not job.aspect_ratio or not job.style or not job.transcript_json:
         return await callback.answer("Настройки job неполные", show_alert=True)
 
-    await callback.answer("Создаю сценарий…")
-    await callback.message.edit_text(
-        "🧠 Создаю сценарий. Платная video generation ещё НЕ запускается…"
-    )
-
-    try:
-        analysis = AudioAnalysis.model_validate_json(job.transcript_json)
-        script = await gemini.make_script(
-            analysis,
-            job.style,
-            job.aspect_ratio,
-            job.intensity,
-        )
-    except Exception as error:
-        return await callback.message.edit_text(
-            f"⚠️ Не удалось создать сценарий: {type(error).__name__}.\n"
-            "Платная генерация не запускалась."
-        )
-
     async with SessionLocal() as session:
         row = await session.get(Job, job_id)
         row.selected_provider = vm.provider
         row.selected_model = model_key
-        row.script_json = script.model_dump_json()
+        row.script_json = None
         row.plan_json = None
         row.estimated_cost = Decimal("0")
-        row.status = JobStatus.WAITING_CONFIRMATION
+        row.status = JobStatus.WAITING_SETTINGS
         await session.commit()
 
-    await _show_storyboard(
-        callback.message,
-        job_id,
-        script,
-        note=(
-            f"📐 {job.aspect_ratio}  •  🎨 {job.style}  •  🤖 {vm.display_name}\n"
-            "Проверь сценарий. До подтверждения никакие платные fal.ai video-запросы не отправляются."
-        ),
+    await callback.answer()
+    await callback.message.edit_text(
+        "📝 КАК СОЗДАТЬ СЦЕНАРИЙ?\n\n"
+        "🧠 Сгенерировать ИИ\n"
+        "Gemini сам создаст storyboard по содержанию аудио.\n\n"
+        "✍️ Свой текст\n"
+        "Ты пришлёшь собственный сценарий. ИИ НЕ будет заменять твою идею — он только разложит текст по таймингу и подготовит технические prompts для video model.\n\n"
+        "💳 На этом этапе платная fal.ai generation ещё не запускается.",
+        reply_markup=scenario_source_kb(job_id),
     )
+
+
+@router.callback_query(F.data.startswith("src:"))
+async def choose_scenario_source(callback: CallbackQuery):
+    _, raw_job_id, source = callback.data.split(":", 2)
+    job_id = int(raw_job_id)
+    job = await _owned_job(callback, job_id)
+    if not job or not job.selected_model or not job.transcript_json:
+        return await callback.answer("Job not ready", show_alert=True)
+
+    if source == "cancel":
+        async with SessionLocal() as session:
+            row = await session.get(Job, job_id)
+            if row:
+                row.status = JobStatus.CANCELLED
+                await session.commit()
+        await callback.answer()
+        return await callback.message.edit_text("❌ Задача отменена.")
+
+    vm = MODELS.get(job.selected_model)
+    if vm is None:
+        return await callback.answer("Model not found", show_alert=True)
+
+    if source == "ai":
+        await callback.answer("Создаю сценарий…")
+        await callback.message.edit_text(
+            "🧠 Gemini создаёт сценарий по аудио…\n"
+            "Платная fal.ai generation НЕ запускается."
+        )
+        try:
+            analysis = AudioAnalysis.model_validate_json(job.transcript_json)
+            script = await gemini.make_script(
+                analysis,
+                job.style,
+                job.aspect_ratio,
+                job.intensity,
+            )
+            await _save_storyboard(job_id, script)
+        except Exception as error:
+            logger.exception("AI storyboard generation failed for job_id=%s", job_id)
+            return await callback.message.edit_text(
+                f"⚠️ Не удалось создать сценарий: {type(error).__name__}.\n"
+                "Платная генерация не запускалась."
+            )
+
+        return await _show_storyboard(
+            callback.message,
+            job_id,
+            script,
+            note=(
+                "🧠 Источник сценария: СГЕНЕРИРОВАН ИИ\n"
+                f"📐 {job.aspect_ratio}  •  🎨 {job.style}  •  🤖 {vm.display_name}\n"
+                "Проверь каждую сцену перед генерацией."
+            ),
+        )
+
+    if source == "own":
+        await callback.answer()
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return await callback.message.answer(
+            "✍️ СВОЙ СЦЕНАРИЙ\n"
+            f"OWN_SCRIPT_JOB_ID={job_id}\n\n"
+            "Ответь НА ЭТО сообщение своим сценарием.\n\n"
+            "Можно написать свободным текстом, например:\n\n"
+            "1. Ночной Кишинёв, камера летит над улицами.\n"
+            "2. Герой идёт по пустому проспекту под дождём.\n"
+            "3. Финальный крупный план, рассвет.\n\n"
+            "ИИ только структурирует твой текст под исходное аудио и video-model: тайминг, camera, transition, English video prompt. Сюжет заменяться не будет.",
+            reply_markup=ForceReply(selective=True),
+        )
+
+    return await callback.answer("Unknown source", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("sb:"))
@@ -326,9 +380,9 @@ async def storyboard_action(callback: CallbackQuery):
             f"✏️ РЕДАКТИРОВАНИЕ СЦЕНАРИЯ\nEDIT_JOB_ID={job_id}\n\n"
             "Ответь НА ЭТО сообщение обычным текстом и напиши, что изменить.\n\n"
             "Например:\n"
-            "• В сцене 1 вместо города сделай лес на рассвете.\n"
+            "• В сцене 1 вместо города сделай лес.\n"
             "• Сцену 2 сделай менее футуристичной.\n"
-            "• Добавь больше крупных планов и плавные переходы.\n\n"
+            "• Добавь крупные планы и плавные переходы.\n\n"
             "Тайминг и исходная речь останутся неизменными.",
             reply_markup=ForceReply(selective=True),
         )
@@ -343,17 +397,12 @@ async def storyboard_action(callback: CallbackQuery):
                 style=job.style or "",
                 ratio=job.aspect_ratio or "",
             )
+            await _save_storyboard(job_id, new_script)
         except Exception as error:
+            logger.exception("Storyboard regeneration failed for job_id=%s", job_id)
             return await status.edit_text(
                 f"⚠️ Не удалось регенерировать сценарий: {type(error).__name__}"
             )
-        async with SessionLocal() as session:
-            row = await session.get(Job, job_id)
-            row.script_json = new_script.model_dump_json()
-            row.plan_json = None
-            row.estimated_cost = Decimal("0")
-            row.status = JobStatus.WAITING_CONFIRMATION
-            await session.commit()
         await status.edit_text("✅ Альтернативный сценарий готов.")
         return await _show_storyboard(callback.message, job_id, new_script)
 
@@ -370,6 +419,7 @@ async def storyboard_action(callback: CallbackQuery):
         pps = await pricing.exact_pixverse_720p_no_audio_pps(vm.endpoint)
         plan = GenerationPlanner().plan(script, job.selected_model, pps)
     except Exception as error:
+        logger.exception("Generation planning failed for job_id=%s", job_id)
         return await status.edit_text(
             f"⚠️ Не удалось построить безопасный план: {type(error).__name__}.\n"
             "Платная генерация не запускалась."
@@ -397,26 +447,71 @@ async def storyboard_action(callback: CallbackQuery):
 
 
 @router.message(F.text)
-async def storyboard_edit_reply(message: Message):
+async def storyboard_text_reply(message: Message):
     reply = message.reply_to_message
-    if not reply or not reply.text:
-        return
-    match = re.search(r"EDIT_JOB_ID=(\d+)", reply.text)
-    if not match:
+    if not reply or not reply.text or not message.text:
         return
 
-    job_id = int(match.group(1))
+    own_match = re.search(r"OWN_SCRIPT_JOB_ID=(\d+)", reply.text)
+    if own_match:
+        job_id = int(own_match.group(1))
+        job = await _owned_job(message, job_id)
+        if not job or not job.selected_model or not job.transcript_json:
+            return await message.answer("Job не найден или уже недоступен.")
+
+        user_text = message.text.strip()
+        if len(user_text) < 3:
+            return await message.answer("Сценарий слишком короткий.")
+        if len(user_text) > 4000:
+            return await message.answer(
+                "Сценарий слишком длинный. Максимум 4000 символов в одном сообщении."
+            )
+
+        status = await message.answer("🧩 Структурирую ТВОЙ сценарий под тайминг аудио…")
+        try:
+            analysis = AudioAnalysis.model_validate_json(job.transcript_json)
+            script = await storyboard_editor.from_user_text(
+                analysis,
+                user_text,
+                style=job.style or "",
+                ratio=job.aspect_ratio or "",
+                intensity=job.intensity or "",
+            )
+            await _save_storyboard(job_id, script)
+        except Exception as error:
+            logger.exception("User storyboard processing failed for job_id=%s", job_id)
+            return await status.edit_text(
+                f"⚠️ Не удалось структурировать сценарий: {type(error).__name__}.\n"
+                "Платная video generation не запускалась."
+            )
+
+        await status.edit_text("✅ Твой сценарий подготовлен. Проверь его перед генерацией.")
+        vm = MODELS[job.selected_model]
+        return await _show_storyboard(
+            message,
+            job_id,
+            script,
+            note=(
+                "✍️ Источник сценария: ТВОЙ ТЕКСТ\n"
+                f"📐 {job.aspect_ratio}  •  🎨 {job.style}  •  🤖 {vm.display_name}\n"
+                "ИИ только структурировал сценарий для video pipeline."
+            ),
+        )
+
+    edit_match = re.search(r"EDIT_JOB_ID=(\d+)", reply.text)
+    if not edit_match:
+        return
+
+    job_id = int(edit_match.group(1))
     job = await _owned_job(message, job_id)
     if not job or not job.script_json:
         return await message.answer("Сценарий не найден или уже недоступен.")
 
-    instructions = (message.text or "").strip()
+    instructions = message.text.strip()
     if not instructions:
         return await message.answer("Напиши, что именно нужно изменить.")
     if len(instructions) > 4000:
-        return await message.answer(
-            "Слишком длинное описание правок. Максимум 4000 символов."
-        )
+        return await message.answer("Слишком длинное описание правок. Максимум 4000 символов.")
 
     status = await message.answer("✏️ Применяю правки к сценарию…")
     script = VideoScript.model_validate_json(job.script_json)
@@ -427,19 +522,12 @@ async def storyboard_edit_reply(message: Message):
             style=job.style or "",
             ratio=job.aspect_ratio or "",
         )
+        await _save_storyboard(job_id, new_script)
     except Exception as error:
+        logger.exception("Storyboard edit failed for job_id=%s", job_id)
         return await status.edit_text(
-            f"⚠️ Не удалось применить правки: {type(error).__name__}. "
-            "Ответь на сообщение редактирования ещё раз."
+            f"⚠️ Не удалось применить правки: {type(error).__name__}. Ответь на сообщение редактирования ещё раз."
         )
-
-    async with SessionLocal() as session:
-        row = await session.get(Job, job_id)
-        row.script_json = new_script.model_dump_json()
-        row.plan_json = None
-        row.estimated_cost = Decimal("0")
-        row.status = JobStatus.WAITING_CONFIRMATION
-        await session.commit()
 
     await status.edit_text("✅ Правки применены. Вот обновлённый сценарий:")
     await _show_storyboard(message, job_id, new_script)

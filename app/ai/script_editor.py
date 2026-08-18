@@ -3,19 +3,120 @@ import logging
 
 from google import genai
 
-from app.ai.schemas import VideoScript
+from app.ai.schemas import AudioAnalysis, VideoScript
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class StoryboardEditorService:
-    """Revise an existing storyboard without changing source narration/timing."""
-
     def _client(self):
         if not settings.google_ai_api_key:
             raise RuntimeError("GOOGLE_AI_API_KEY is missing")
         return genai.Client(api_key=settings.google_ai_api_key)
+
+    def _models(self) -> list[str]:
+        return [
+            settings.gemini_primary_model,
+            settings.gemini_fallback_model,
+            settings.gemini_secondary_fallback_model,
+        ]
+
+    async def _structured(
+        self,
+        prompt: str,
+        error_prefix: str,
+    ) -> VideoScript:
+        client = self._client()
+        failures: list[str] = []
+
+        for model in self._models():
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_json_schema": VideoScript.model_json_schema(),
+                    },
+                )
+
+                if not response.text:
+                    raise RuntimeError("Gemini returned an empty storyboard")
+
+                return VideoScript.model_validate_json(response.text)
+
+            except Exception as error:
+                failures.append(f"{model}: {type(error).__name__}: {error}")
+                logger.warning(
+                    "%s on %s",
+                    error_prefix,
+                    model,
+                    exc_info=True,
+                )
+
+        raise RuntimeError(f"{error_prefix} | " + " | ".join(failures))
+
+    async def from_user_text(
+        self,
+        analysis: AudioAnalysis,
+        user_text: str,
+        *,
+        style: str = "",
+        ratio: str = "",
+        intensity: str = "",
+    ) -> VideoScript:
+        user_text = user_text.strip()
+        if not user_text:
+            raise ValueError("User storyboard is empty")
+
+        prompt = f"""
+You are a technical storyboard formatter.
+
+IMPORTANT:
+The USER wrote the visual scenario themselves.
+Their scenario is AUTHORITATIVE.
+Do NOT replace it with a different creative concept.
+
+SOURCE AUDIO ANALYSIS JSON:
+{analysis.model_dump_json()}
+
+USER'S OWN STORYBOARD:
+{user_text}
+
+VIDEO SETTINGS:
+- style: {style}
+- aspect ratio: {ratio}
+- editing intensity: {intensity}
+- exact source audio duration: {analysis.duration_seconds:.3f} seconds
+
+Build a VideoScript matching the requested JSON schema.
+
+STRICT RULES:
+1. Preserve the user's visual ideas, scene order, subjects, locations,
+   actions, mood and requested details.
+2. Do not invent a different story.
+3. You may only add minimal technical details needed by a video model:
+   camera movement, shot type, transition, lighting wording and prompt formatting.
+4. If the user explicitly numbered scenes, preserve that order.
+5. If the user did not provide scene boundaries, split the user's text
+   into sensible scenes that cover the complete source-audio duration.
+6. Scene timing must start at 0 and cover the full audio duration.
+   Avoid gaps and overlaps.
+7. narration must represent the ACTUAL source audio/transcript for that
+   time range. Never replace the spoken audio with visual-description text.
+8. video_prompt must faithfully translate the user's visual intention
+   into a strong ENGLISH text-to-video prompt.
+9. Do not add logos, text overlays, subtitles or extra characters unless requested.
+10. importance must be between 0 and 1.
+11. Return only data matching the JSON schema.
+"""
+
+        return await self._structured(
+            prompt,
+            "User storyboard structuring failed",
+        )
 
     async def revise(
         self,
@@ -52,34 +153,8 @@ Rules:
 6. Return only data matching the requested JSON schema.
 """
 
-        models = [
-            settings.gemini_primary_model,
-            settings.gemini_fallback_model,
-            settings.gemini_secondary_fallback_model,
-        ]
-        failures: list[str] = []
-        client = self._client()
-
-        for model in models:
-            try:
-                response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=model,
-                    contents=prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_json_schema": VideoScript.model_json_schema(),
-                    },
-                )
-                if not response.text:
-                    raise RuntimeError("Gemini returned an empty storyboard")
-                candidate = VideoScript.model_validate_json(response.text)
-                return self._preserve_timeline(current, candidate)
-            except Exception as error:
-                failures.append(f"{model}: {type(error).__name__}: {error}")
-                logger.warning("Storyboard edit failed on %s", model, exc_info=True)
-
-        raise RuntimeError("Storyboard edit failed | " + " | ".join(failures))
+        candidate = await self._structured(prompt, "Storyboard edit failed")
+        return self._preserve_timeline(current, candidate)
 
     async def regenerate(
         self,

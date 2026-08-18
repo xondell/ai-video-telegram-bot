@@ -39,3 +39,12 @@ def confirm_kb(job_id: int):
         [("🚀 Создать", f"c:{job_id}:create")],
         [("❌ Отмена", f"c:{job_id}:cancel")],
     ])
+
+
+
+def storyboard_kb(job_id: int):
+    return kb([
+        [("✅ Сценарий подходит", f"sb:{job_id}:approve")],
+        [("✏️ Подправить", f"sb:{job_id}:edit"), ("🔄 Регенерировать", f"sb:{job_id}:regen")],
+        [("❌ Отмена", f"sb:{job_id}:cancel")],
+    ])

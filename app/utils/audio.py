@@ -29,5 +29,7 @@ async def probe_audio(path: Path, telegram_duration: float | None = None) -> flo
     hours, minutes, seconds = match.groups()
     duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
     if duration <= 0 or duration > settings.max_audio_seconds:
-        raise InvalidAudio(f"Duration {duration:.1f}s outside allowed range")
+        raise InvalidAudio(
+            f"Duration {duration:.1f}s exceeds the {settings.max_audio_seconds}s limit"
+        )
     return duration

@@ -1,4 +1,5 @@
 import json
+import re
 import logging
 import uuid
 from decimal import Decimal
@@ -6,11 +7,12 @@ from pathlib import Path
 
 from aiogram import F, Bot, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ForceReply, Message
 from sqlalchemy import select
 
 from app.ai.google_client import GeminiService
 from app.ai.schemas import AudioAnalysis, VideoScript
+from app.ai.script_editor import StoryboardEditorService
 from app.budget.controller import BudgetExceeded, CostController
 from app.config import settings
 from app.db.models import Job, JobStatus, Scene, User
@@ -21,7 +23,7 @@ from app.providers.fal.pricing import FalPricingService, PricingUnavailable
 from app.services.storage import storage
 from app.utils.audio import InvalidAudio, probe_audio
 from app.video.planner import GenerationPlan, GenerationPlanner
-from .keyboards import confirm_kb, model_kb, ratio_kb, style_kb
+from .keyboards import confirm_kb, model_kb, ratio_kb, storyboard_kb, style_kb
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ gemini = GeminiService()
 pricing = FalPricingService()
 costs = CostController()
 fal = FalVideoClient()
+storyboard_editor = StoryboardEditorService()
 
 
 def _ratio_from_token(token: str) -> str:
@@ -64,13 +67,61 @@ async def _owned_job(event, job_id: int) -> Job | None:
         return job
 
 
+
+
+def _clock(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _storyboard_pages(script: VideoScript, max_chars: int = 3600) -> list[str]:
+    blocks = [
+        "🎬 СЦЕНАРИЙ ПЕРЕД ГЕНЕРАЦИЕЙ\n"
+        f"Название: {script.title}\n"
+        f"Visual direction: {script.visual_direction}"
+    ]
+    for i, scene in enumerate(script.scenes, 1):
+        block = (
+            f"{i:02d} • {_clock(scene.start)}–{_clock(scene.end)}\n"
+            f"🗣 {scene.narration}\n"
+            f"🎥 {scene.video_prompt}"
+        )
+        if scene.camera:
+            block += f"\n📷 Camera: {scene.camera}"
+        if scene.transition:
+            block += f"\n↪️ Transition: {scene.transition}"
+        blocks.append(block)
+
+    pages: list[str] = []
+    current = ""
+    for block in blocks:
+        candidate = block if not current else current + "\n\n" + block
+        if len(candidate) <= max_chars:
+            current = candidate
+        else:
+            if current:
+                pages.append(current)
+            current = block[:max_chars]
+    if current:
+        pages.append(current)
+    return pages or ["🎬 Сценарий пуст."]
+
+
+async def _show_storyboard(message: Message, job_id: int, script: VideoScript, note: str = ""):
+    pages = _storyboard_pages(script)
+    for index, page in enumerate(pages):
+        prefix = (note + "\n\n") if note and index == 0 else ""
+        markup = storyboard_kb(job_id) if index == len(pages) - 1 else None
+        await message.answer(prefix + page, reply_markup=markup)
+
 @router.message(CommandStart())
 async def start(message: Message):
     await message.answer(
         "🎬 AI Video Generator\n\n"
-        "Отправь voice или аудиофайл (до 3 минут). Я распознаю речь, создам сценарий, "
+        f"Отправь voice или аудиофайл (до {settings.max_audio_seconds} секунд). "
+        "Я распознаю речь, создам сценарий, "
         "сгенерирую ключевые AI-сцены и соберу MP4.\n\n"
-        "💰 HARD LIMIT платных media API: $5.00 на задачу."
+        f"💰 HARD LIMIT платных media API: ${settings.max_job_cost_usd:.2f} на задачу."
     )
 
 
@@ -198,26 +249,33 @@ async def choose_model(callback: CallbackQuery):
     job = await _owned_job(callback, job_id)
     if not job:
         return await callback.answer("Job not found", show_alert=True)
+
     model_key = "pixverse-v6" if selected == "auto" else selected
     vm = MODELS.get(model_key)
     if vm is None or not vm.paid_enabled:
         return await callback.answer(
-            "Эта модель пока заблокирована: нет достаточно строгого live cost adapter для hard limit $2.",
+            f"Эта модель пока заблокирована: нет достаточно строгого live cost adapter для hard limit ${settings.max_job_cost_usd:.2f}.",
             show_alert=True,
         )
     if not job.aspect_ratio or not job.style or not job.transcript_json:
         return await callback.answer("Настройки job неполные", show_alert=True)
 
-    await callback.answer("Создаю сценарий и считаю live price…")
-    await callback.message.edit_text("🧠 Создаю сценарий и безопасный generation plan…")
+    await callback.answer("Создаю сценарий…")
+    await callback.message.edit_text(
+        "🧠 Создаю сценарий. Платная video generation ещё НЕ запускается…"
+    )
+
     try:
         analysis = AudioAnalysis.model_validate_json(job.transcript_json)
-        script = await gemini.make_script(analysis, job.style, job.aspect_ratio, job.intensity)
-        pps = await pricing.exact_pixverse_720p_no_audio_pps(vm.endpoint)
-        plan = GenerationPlanner().plan(script, model_key, pps)
-    except (PricingUnavailable, Exception) as error:
+        script = await gemini.make_script(
+            analysis,
+            job.style,
+            job.aspect_ratio,
+            job.intensity,
+        )
+    except Exception as error:
         return await callback.message.edit_text(
-            f"⚠️ Не удалось построить безопасный план: {type(error).__name__}.\n"
+            f"⚠️ Не удалось создать сценарий: {type(error).__name__}.\n"
             "Платная генерация не запускалась."
         )
 
@@ -226,19 +284,165 @@ async def choose_model(callback: CallbackQuery):
         row.selected_provider = vm.provider
         row.selected_model = model_key
         row.script_json = script.model_dump_json()
+        row.plan_json = None
+        row.estimated_cost = Decimal("0")
+        row.status = JobStatus.WAITING_CONFIRMATION
+        await session.commit()
+
+    await _show_storyboard(
+        callback.message,
+        job_id,
+        script,
+        note=(
+            f"📐 {job.aspect_ratio}  •  🎨 {job.style}  •  🤖 {vm.display_name}\n"
+            "Проверь сценарий. До подтверждения никакие платные fal.ai video-запросы не отправляются."
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("sb:"))
+async def storyboard_action(callback: CallbackQuery):
+    _, raw_job_id, action = callback.data.split(":", 2)
+    job_id = int(raw_job_id)
+    job = await _owned_job(callback, job_id)
+    if not job or not job.script_json or not job.selected_model:
+        return await callback.answer("Сценарий не найден", show_alert=True)
+
+    if action == "cancel":
+        async with SessionLocal() as session:
+            row = await session.get(Job, job_id)
+            row.status = JobStatus.CANCELLED
+            await session.commit()
+        await callback.answer()
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return await callback.message.answer("❌ Задача отменена.")
+
+    script = VideoScript.model_validate_json(job.script_json)
+
+    if action == "edit":
+        await callback.answer()
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return await callback.message.answer(
+            f"✏️ РЕДАКТИРОВАНИЕ СЦЕНАРИЯ\nEDIT_JOB_ID={job_id}\n\n"
+            "Ответь НА ЭТО сообщение обычным текстом и напиши, что изменить.\n\n"
+            "Например:\n"
+            "• В сцене 1 вместо города сделай лес на рассвете.\n"
+            "• Сцену 2 сделай менее футуристичной.\n"
+            "• Добавь больше крупных планов и плавные переходы.\n\n"
+            "Тайминг и исходная речь останутся неизменными.",
+            reply_markup=ForceReply(selective=True),
+        )
+
+    if action == "regen":
+        await callback.answer("Регенерирую сценарий…")
+        await callback.message.edit_reply_markup(reply_markup=None)
+        status = await callback.message.answer("🔄 Создаю альтернативный сценарий…")
+        try:
+            new_script = await storyboard_editor.regenerate(
+                script,
+                style=job.style or "",
+                ratio=job.aspect_ratio or "",
+            )
+        except Exception as error:
+            return await status.edit_text(
+                f"⚠️ Не удалось регенерировать сценарий: {type(error).__name__}"
+            )
+        async with SessionLocal() as session:
+            row = await session.get(Job, job_id)
+            row.script_json = new_script.model_dump_json()
+            row.plan_json = None
+            row.estimated_cost = Decimal("0")
+            row.status = JobStatus.WAITING_CONFIRMATION
+            await session.commit()
+        await status.edit_text("✅ Альтернативный сценарий готов.")
+        return await _show_storyboard(callback.message, job_id, new_script)
+
+    if action != "approve":
+        return await callback.answer("Unknown action", show_alert=True)
+
+    vm = MODELS[job.selected_model]
+    await callback.answer("Проверяю live price…")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    status = await callback.message.answer(
+        "💰 Сценарий принят. Считаю безопасный план генерации…"
+    )
+    try:
+        pps = await pricing.exact_pixverse_720p_no_audio_pps(vm.endpoint)
+        plan = GenerationPlanner().plan(script, job.selected_model, pps)
+    except Exception as error:
+        return await status.edit_text(
+            f"⚠️ Не удалось построить безопасный план: {type(error).__name__}.\n"
+            "Платная генерация не запускалась."
+        )
+
+    async with SessionLocal() as session:
+        row = await session.get(Job, job_id)
         row.plan_json = plan.model_dump_json()
         row.estimated_cost = plan.estimated_cost
         row.status = JobStatus.WAITING_CONFIRMATION
         await session.commit()
 
-    await callback.message.edit_text(
-        f"🎬 Ваше видео\n\n📐 {job.aspect_ratio}\n🎨 {job.style}\n"
-        f"🤖 {vm.display_name}\n⏱ Final: ~{analysis.duration_seconds:.0f}s\n\n"
-        f"💰 HARD LIMIT: $5.00\n🎯 Planned maximum: ${plan.estimated_cost:.2f}\n"
+    analysis = AudioAnalysis.model_validate_json(job.transcript_json)
+    await status.edit_text(
+        f"🎬 Всё готово к генерации\n\n"
+        f"📐 {job.aspect_ratio}\n🎨 {job.style}\n🤖 {vm.display_name}\n"
+        f"⏱ Final: ~{analysis.duration_seconds:.0f}s\n\n"
+        f"💰 HARD LIMIT: ${settings.max_job_cost_usd:.2f}\n"
+        f"🎯 Planned maximum: ${plan.estimated_cost:.2f}\n"
         f"🛡 Headroom: ${(settings.max_job_cost_usd - plan.estimated_cost):.2f}\n"
-        f"🎞 Unique AI video: ~{plan.generated_video_seconds}s",
+        f"🎞 Unique AI video: ~{plan.generated_video_seconds}s\n\n"
+        "Нажатие «Создать» запустит платные video-запросы.",
         reply_markup=confirm_kb(job_id),
     )
+
+
+@router.message(F.text)
+async def storyboard_edit_reply(message: Message):
+    reply = message.reply_to_message
+    if not reply or not reply.text:
+        return
+    match = re.search(r"EDIT_JOB_ID=(\d+)", reply.text)
+    if not match:
+        return
+
+    job_id = int(match.group(1))
+    job = await _owned_job(message, job_id)
+    if not job or not job.script_json:
+        return await message.answer("Сценарий не найден или уже недоступен.")
+
+    instructions = (message.text or "").strip()
+    if not instructions:
+        return await message.answer("Напиши, что именно нужно изменить.")
+    if len(instructions) > 4000:
+        return await message.answer(
+            "Слишком длинное описание правок. Максимум 4000 символов."
+        )
+
+    status = await message.answer("✏️ Применяю правки к сценарию…")
+    script = VideoScript.model_validate_json(job.script_json)
+    try:
+        new_script = await storyboard_editor.revise(
+            script,
+            instructions,
+            style=job.style or "",
+            ratio=job.aspect_ratio or "",
+        )
+    except Exception as error:
+        return await status.edit_text(
+            f"⚠️ Не удалось применить правки: {type(error).__name__}. "
+            "Ответь на сообщение редактирования ещё раз."
+        )
+
+    async with SessionLocal() as session:
+        row = await session.get(Job, job_id)
+        row.script_json = new_script.model_dump_json()
+        row.plan_json = None
+        row.estimated_cost = Decimal("0")
+        row.status = JobStatus.WAITING_CONFIRMATION
+        await session.commit()
+
+    await status.edit_text("✅ Правки применены. Вот обновлённый сценарий:")
+    await _show_storyboard(message, job_id, new_script)
 
 
 @router.callback_query(F.data.startswith("c:"))

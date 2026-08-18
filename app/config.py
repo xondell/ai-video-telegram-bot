@@ -61,12 +61,28 @@ class Settings(BaseSettings):
     @property
     def async_database_url(self) -> str:
         url = self.supabase_database_url.strip()
-        if url.startswith("postgresql+asyncpg://"):
+
+        if url.startswith("postgresql+psycopg://"):
             return url
+
+        if url.startswith("postgresql+asyncpg://"):
+            return (
+                "postgresql+psycopg://"
+                + url[len("postgresql+asyncpg://"):]
+            )
+
         if url.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + url[len("postgresql://"):]
+            return (
+                "postgresql+psycopg://"
+                + url[len("postgresql://"):]
+            )
+
         if url.startswith("postgres://"):
-            return "postgresql+asyncpg://" + url[len("postgres://"):]
+            return (
+                "postgresql+psycopg://"
+                + url[len("postgres://"):]
+            )
+
         return url
 
     @staticmethod

@@ -36,7 +36,7 @@ class CostController:
 
             if job_spent + job_reserved + max_cost > settings.max_job_cost_usd:
                 await s.rollback()
-                raise BudgetExceeded("Per-job $2.00 hard limit")
+                raise BudgetExceeded("Per-job $5.00 hard limit")
             if global_spent + global_reserved + max_cost > Decimal(budget.limit):
                 await s.rollback()
                 raise BudgetExceeded("Global project budget exceeded")

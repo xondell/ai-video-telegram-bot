@@ -14,5 +14,5 @@ def test_pixverse_target_cap():
         VideoScript(title="x", visual_direction="x", scenes=scenes),
         "pixverse-v6", Decimal("0.045")
     )
-    assert plan.estimated_cost <= Decimal("1.80")
+    assert plan.estimated_cost <= Decimal("4.50")
     assert plan.generated_video_seconds == 40

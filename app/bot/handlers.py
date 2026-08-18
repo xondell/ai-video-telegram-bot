@@ -70,7 +70,7 @@ async def start(message: Message):
         "🎬 AI Video Generator\n\n"
         "Отправь voice или аудиофайл (до 3 минут). Я распознаю речь, создам сценарий, "
         "сгенерирую ключевые AI-сцены и соберу MP4.\n\n"
-        "💰 HARD LIMIT платных media API: $2.00 на задачу."
+        "💰 HARD LIMIT платных media API: $5.00 на задачу."
     )
 
 
@@ -234,7 +234,7 @@ async def choose_model(callback: CallbackQuery):
     await callback.message.edit_text(
         f"🎬 Ваше видео\n\n📐 {job.aspect_ratio}\n🎨 {job.style}\n"
         f"🤖 {vm.display_name}\n⏱ Final: ~{analysis.duration_seconds:.0f}s\n\n"
-        f"💰 HARD LIMIT: $2.00\n🎯 Planned maximum: ${plan.estimated_cost:.2f}\n"
+        f"💰 HARD LIMIT: $5.00\n🎯 Planned maximum: ${plan.estimated_cost:.2f}\n"
         f"🛡 Headroom: ${(settings.max_job_cost_usd - plan.estimated_cost):.2f}\n"
         f"🎞 Unique AI video: ~{plan.generated_video_seconds}s",
         reply_markup=confirm_kb(job_id),

@@ -102,7 +102,7 @@ do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'ck_jobs_cost_hard_cap') then
     alter table public.jobs add constraint ck_jobs_cost_hard_cap
-      check (estimated_cost >= 0 and reserved_cost >= 0 and actual_cost >= 0 and actual_cost + reserved_cost <= 2.00);
+      check (estimated_cost >= 0 and reserved_cost >= 0 and actual_cost >= 0 and actual_cost + reserved_cost <= 5.00);
   end if;
   if not exists (select 1 from pg_constraint where conname = 'ck_project_budget_hard_cap') then
     alter table public.project_budget add constraint ck_project_budget_hard_cap

@@ -7,7 +7,7 @@ The dedicated Supabase project already exists:
 - region: `eu-west-1`
 - Storage: private `bot-media`
 - global paid-media budget: `$10.00`
-- per-job hard cap: `$2.00`
+- per-job hard cap: `$5.00`
 
 ## Vercel environment variables
 

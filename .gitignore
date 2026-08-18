@@ -8,3 +8,5 @@ __pycache__/
 data/
 .vercel/
 *.pyc
+.vercel
+.env*

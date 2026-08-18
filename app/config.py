@@ -41,9 +41,9 @@ class Settings(BaseSettings):
     enable_paid_ai_music: bool = False
 
     # Hard safety limits are intentionally code defaults, not deploy-time knobs.
-    max_job_cost_usd: Decimal = Decimal("2.00")
-    target_job_cost_usd: Decimal = Decimal("1.80")
-    emergency_reserve_usd: Decimal = Decimal("0.20")
+    max_job_cost_usd: Decimal = Decimal("5.00")
+    target_job_cost_usd: Decimal = Decimal("4.50")
+    emergency_reserve_usd: Decimal = Decimal("0.50")
     global_project_budget_usd: Decimal = Decimal("10.00")
     price_cache_ttl_seconds: int = 1200
 

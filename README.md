@@ -6,8 +6,8 @@ Production-oriented Telegram bot for:
 
 ## Safety invariants
 
-- paid media API hard cap: **$2.00/job**
-- normal planner target: **$1.80/job**
+- paid media API hard cap: **$5.00/job**
+- normal planner target: **$4.50/job**
 - global initial paid-media budget: **$10.00**
 - atomic Postgres reservations before paid requests
 - unknown provider billing stays reserved rather than being assumed free
@@ -47,6 +47,6 @@ See [`DEPLOYMENT.md`](DEPLOYMENT.md) for details.
 
 Telegram sends updates to a secret-derived Vercel webhook path. Job/user/callback state lives in Supabase instead of process memory, so different Vercel Function instances can handle consecutive updates safely.
 
-Paid fal requests use queue/webhooks. Before each paid request the app refreshes/validates PixVerse pricing, calculates a plan at or below `$1.80`, and atomically reserves the maximum request cost in both job and global ledgers.
+Paid fal requests use queue/webhooks. Before each paid request the app refreshes/validates PixVerse pricing, calculates a plan at or below `$4.50`, and atomically reserves the maximum request cost in both job and global ledgers.
 
 The final video is assembled with `imageio-ffmpeg`, so the deployed Python package carries its own FFmpeg executable rather than assuming Vercel has a system FFmpeg installation.

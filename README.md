@@ -1,3 +1,25 @@
+<!-- ALL-RIGHTS-RESERVED-WARNING:START -->
+
+# 🚫 COMMERCIAL USE PROHIBITED
+
+# 🔒 ALL RIGHTS RESERVED
+
+> [!CAUTION]
+> ## **THIS PROJECT IS NOT OPEN SOURCE**
+>
+> **No permission is granted to use, copy, download, modify, distribute,
+> deploy, host, publish, resell, monetize, or otherwise exploit this code.**
+>
+> **Commercial use is strictly prohibited.**
+>
+> Non-commercial, personal, educational, research, experimental, and
+> internal use are also prohibited unless the repository owner gives
+> prior explicit written permission.
+>
+> See [`LICENSE`](./LICENSE) for the full proprietary terms.
+
+<!-- ALL-RIGHTS-RESERVED-WARNING:END -->
+
 # AI Video Telegram Bot
 
 Production-oriented Telegram bot for:

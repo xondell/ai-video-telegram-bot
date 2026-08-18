@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     temp_dir: Path = Path("/tmp/ai-video")
     output_dir: Path = Path("/tmp/ai-video-output")
     max_audio_mb: int = 50
-    max_audio_seconds: int = 20
+    max_audio_seconds: int = 35
     max_video_seconds: int = 180
     log_level: str = "INFO"
 

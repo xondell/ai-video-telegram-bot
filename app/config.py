@@ -32,10 +32,10 @@ class Settings(BaseSettings):
     supabase_storage_bucket: str = SUPABASE_STORAGE_BUCKET
 
     # Fixed model policy. Paid providers other than the strict PixVerse adapter stay disabled.
-    gemini_primary_model: str = "gemini-3.7-flash"
-    gemini_fallback_model: str = "gemini-3.5-flash"
-    gemini_secondary_fallback_model: str = "gemini-3.1-flash-lite"
-    google_image_model: str = "gemini-3.1-flash-lite-image"
+    gemini_primary_model: str = "gemini-3.1-flash-lite"
+    gemini_fallback_model: str = "gemini-3.5-flash-lite"
+    gemini_secondary_fallback_model: str = "gemini-3.6-flash"
+    google_image_model: str = "gemini-3.1-flash-image"
     enable_paid_google_images: bool = False
     enable_google_video: bool = False
     enable_paid_ai_music: bool = False

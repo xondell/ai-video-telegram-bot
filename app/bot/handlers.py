@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from decimal import Decimal
 from pathlib import Path
@@ -21,6 +22,8 @@ from app.services.storage import storage
 from app.utils.audio import InvalidAudio, probe_audio
 from app.video.planner import GenerationPlan, GenerationPlanner
 from .keyboards import confirm_kb, model_kb, ratio_kb, style_kb
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 gemini = GeminiService()
@@ -140,6 +143,10 @@ async def audio_upload(message: Message, bot: Bot):
             job.status = JobStatus.WAITING_SETTINGS
             await session.commit()
     except Exception as error:
+        logger.exception(
+            "Audio analysis failed for job_id=%s",
+            job_id,
+        )
         async with SessionLocal() as session:
             job = await session.get(Job, job_id)
             if job:

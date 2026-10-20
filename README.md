@@ -16,7 +16,7 @@
 > internal use are also prohibited unless the repository owner gives
 > prior explicit written permission.
 >
-> See [`LICENSE`](./LICENSE) for the full proprietary terms.
+> This rights notice is retained here; the current default branch does not contain a separate `LICENSE` file.
 
 <!-- ALL-RIGHTS-RESERVED-WARNING:END -->
 
@@ -72,3 +72,24 @@ Telegram sends updates to a secret-derived Vercel webhook path. Job/user/callbac
 Paid fal requests use queue/webhooks. Before each paid request the app refreshes/validates PixVerse pricing, calculates a plan at or below `$4.50`, and atomically reserves the maximum request cost in both job and global ledgers.
 
 The final video is assembled with `imageio-ffmpeg`, so the deployed Python package carries its own FFmpeg executable rather than assuming Vercel has a system FFmpeg installation.
+
+## Source guide and offline checks
+
+| Area | Location |
+|---|---|
+| FastAPI application | [app/main.py](app/main.py) |
+| Runtime configuration | [app/config.py](app/config.py) |
+| Budget reservations | [app/budget/controller.py](app/budget/controller.py) |
+| Scene planning and rendering | [app/video](app/video) |
+| Database migrations | [supabase/migrations](supabase/migrations) |
+| Environment template | [.env.example](.env.example) |
+
+With Python 3.11 or newer, install the development extras to run the focused budget and planner tests:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/python -m pytest tests/test_budget_math.py tests/test_planner.py
+```
+
+These checks are separate from deployment and real provider generation. Deployment instructions are in [DEPLOYMENT.md](DEPLOYMENT.md).
